@@ -75,4 +75,21 @@ class ResourcePool:
         Releases resources used by a finished job.
         """ 
         for res, amount in job_needs.items():
-            self.available[res] += amount 
+            self.available[res] += amount
+
+def generate_random_job(job_id: int):
+    """
+    Generates a job with random attributes for simulation.
+    """ 
+    duration = random.randint(10, 100)
+    priority = random.randint(1, 5) # 5 being the highest.
+
+    res_profile = random.choice([
+        {'cpu': 1, 'memory': 0.5}, # Standard work
+        {'cpu': 2, 'memory': 1.0}, # Medium compute
+        {'cpu': 0.5, 'memory': 0.1} # Simple home task
+    ])
+
+    deadline = time.time() + duration * random.uniform(2, 5)
+
+    return Job(job_id, duration, priority, res_profile, deadline)
