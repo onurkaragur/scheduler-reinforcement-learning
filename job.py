@@ -44,5 +44,35 @@ class Job:
         def __repr__(self):
             status = "RUNNING" if self.is_running else "WAITING" if self.remaining_units > 0 else "DONE"
             return (f"Job(ID={self.job_id}), Prio={self.priority}, "
-                    f"Rem={self.remaining_units}/{self.duration_units}, Status={status}") 
-            
+                    f"Rem={self.remaining_units}/{self.duration_units}, Status={status}")
+        
+class ResourcePool:
+    """
+    Manages available system resources.
+    """
+    def __init__(self, initial_resources: dict):
+        self.capacity = initial_resources.copy()
+        self.available = initial_resources.copy()
+
+    def allocate(self, job_needs: dict) -> bool:
+        """
+        Attempts to allocate resources for a job.
+        """
+        can_allocate = True
+        for res, amount in job_needs.items():
+            if self.available.get(res, 0) < amount:
+                can_allocate = False
+                break
+
+        if can_allocate:
+            for res, amount in job_needs.items():
+                self.available[res] -= amount
+            return True
+        return False
+    
+    def deallocate(self, job_needs: dict):
+        """
+        Releases resources used by a finished job.
+        """ 
+        for res, amount in job_needs.items():
+            self.available[res] += amount 
