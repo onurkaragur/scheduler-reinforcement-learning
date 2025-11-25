@@ -119,8 +119,55 @@ class SchedulerEnv:
 
         return new_state, reward, done, info 
 
-    def _get_state():
-        pass
+    def _get_state(self) -> np.ndarray:
+        """
+        Generates the observation (state) vector for the agent.
+        This MUST contain all info the agent needs to make a decision.
+        ASSUMPTION: We focus on the aggregate state and the features of the top 3 queued jobs.
+        """
+        # Base state features.
+        num_queued = len(self.job_queue)
+        num_running = len(self.running_jobs)
+        available_cpu = self.resource_pool.available.get("cpu", 0)
+        available_mem = self.resource_pool.available.get("memory", 0)
+
+        state = [
+            num_queued,
+            num_running,
+            available_cpu,
+            available_mem,
+            self.current_time_step / self.max_time_steps # Time progress
+        ]
+
+        # Feature vector for 3 highest priority jobs in queue.
+        sorted_queue = sorted(self.job_queue, key=lambda j: j.priority, reverse=True)
+
+        job_features = []
+        for job_idx in range(3):
+            if job_idx < num_queued:
+                job = sorted_queue[job_idx]
+                time_waiting = time.time() - job.arrival_time
+                # Crude normalization for time_waiting and remaining duration
+                job_features.extend([
+                    job.priority / 5.0, # Prio (Max 5)
+                    job.remaining_units / 100.0, # Duration (Max 100)
+                    time_waiting / 30.0, # Waiting time (Max 30s)
+                    job.resource_needs.get('cpu', 0) / 4.0 # CPU needed (Max 4)
+                ])
+            else:
+                # Padding for non-existent jobs
+                job_features.extend([0.0] * 4)
+
+        state.extend(job_features)
+
+        return np.array(state, dtype=np.float32)
+    
+    # Note: State dimension is 5 (system) + 3 * 4 (job features) = 17
+    def get_state_size(self):
+        return 17
+    
+    def get_action_size(self):
+        return self.action_space_size
 
 
 
