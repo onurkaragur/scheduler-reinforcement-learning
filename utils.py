@@ -130,3 +130,58 @@ def compare_schedulers(results: Dict[str, Dict[str, float]]):
     
     print("="*80 + "\n")
 
+
+def clone_tasks(tasks: List[Task]) -> List[Task]:
+    """Create a fresh copy of each task."""
+    cloned = []
+    for task in tasks:
+        cloned.append(
+            Task(
+                task_id=task.task_id,
+                cpu_usage=task.cpu_usage,
+                ram_usage=task.ram_usage,
+                disk_io=task.disk_io,
+                network_io=task.network_io,
+                priority=task.priority,
+                vm_id=task.vm_id,
+                execution_time=task.execution_time,
+                arrival_time=task.arrival_time,
+            )
+        )
+    return cloned
+
+
+def split_dataset(
+    tasks: List[Task],
+    train_ratio: float,
+    val_ratio: float,
+    test_ratio: float,
+    seed: int = 42,
+) -> Tuple[List[Task], List[Task], List[Task]]:
+    """
+    Split tasks into train/val/test subsets using all data.
+    """
+    if not np.isclose(train_ratio + val_ratio + test_ratio, 1.0):
+        raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
+
+    total = len(tasks)
+    indices = np.arange(total)
+    rng = np.random.default_rng(seed)
+    rng.shuffle(indices)
+
+    train_end = int(train_ratio * total)
+    val_end = train_end + int(val_ratio * total)
+
+    train_indices = indices[:train_end]
+    val_indices = indices[train_end:val_end]
+    test_indices = indices[val_end:]
+
+    def build_subset(idxs):
+        return clone_tasks([tasks[i] for i in idxs])
+
+    train_subset = build_subset(train_indices)
+    val_subset = build_subset(val_indices)
+    test_subset = build_subset(test_indices)
+
+    return train_subset, val_subset, test_subset
+
