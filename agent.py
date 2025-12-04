@@ -17,7 +17,7 @@ class DQN(nn.Module):
     def __init__(self, state_size: int, action_size: int, hidden_sizes=None):
         super().__init__()
         if hidden_sizes is None:
-            hidden_sizes = [128, 128, 64]
+            hidden_sizes = [256, 256, 128]
 
         layers = []
         input_size = state_size
@@ -33,6 +33,46 @@ class DQN(nn.Module):
         return self.network(state)
 
 
+class DuelingDQN(nn.Module):
+    """Dueling DQN architecture: separates value and advantage streams."""
+
+    def __init__(self, state_size: int, action_size: int, hidden_sizes=None):
+        super().__init__()
+        if hidden_sizes is None:
+            hidden_sizes = [256, 256]
+
+        # Shared feature layers
+        layers = []
+        input_size = state_size
+        for hidden_size in hidden_sizes:
+            layers.append(nn.Linear(input_size, hidden_size))
+            layers.append(nn.ReLU())
+            input_size = hidden_size
+        self.feature_layers = nn.Sequential(*layers)
+
+        # Value stream
+        self.value_stream = nn.Sequential(
+            nn.Linear(input_size, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1)
+        )
+
+        # Advantage stream
+        self.advantage_stream = nn.Sequential(
+            nn.Linear(input_size, 128),
+            nn.ReLU(),
+            nn.Linear(128, action_size)
+        )
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        features = self.feature_layers(state)
+        value = self.value_stream(features)
+        advantages = self.advantage_stream(features)
+        # Q(s,a) = V(s) + (A(s,a) - mean(A))
+        q_values = value + (advantages - advantages.mean(dim=1, keepdim=True))
+        return q_values
+
+
 class DQNAgent:
     """DQN agent with experience replay and target network."""
 
@@ -40,14 +80,15 @@ class DQNAgent:
         self,
         state_size: int,
         action_size: int,
-        learning_rate: float = 1e-3,
-        gamma: float = 0.95,
+        learning_rate: float = 5e-4,
+        gamma: float = 0.99,
         epsilon: float = 1.0,
         epsilon_min: float = 0.05,
         epsilon_decay_episodes: int = 300,
-        memory_size: int = 10000,
-        batch_size: int = 64,
-        target_update_freq: int = 100,
+        memory_size: int = 50000,
+        batch_size: int = 128,
+        target_update_freq: int = 1000,
+        use_dueling: bool = True,
         device: Optional[str] = None,
     ):
         self.state_size = state_size
@@ -62,14 +103,21 @@ class DQNAgent:
         self.decay_counter = 0
         self.target_update_freq = target_update_freq
         self.update_counter = 0
+        self.use_dueling = use_dueling
 
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = torch.device(device)
 
-        self.q_network = DQN(state_size, action_size).to(self.device)
-        self.target_network = DQN(state_size, action_size).to(self.device)
+        # Use Dueling DQN if enabled, otherwise standard DQN
+        if use_dueling:
+            self.q_network = DuelingDQN(state_size, action_size).to(self.device)
+            self.target_network = DuelingDQN(state_size, action_size).to(self.device)
+        else:
+            self.q_network = DQN(state_size, action_size).to(self.device)
+            self.target_network = DQN(state_size, action_size).to(self.device)
+        
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate)
 
         self.update_target_network()
@@ -103,7 +151,11 @@ class DQNAgent:
         dones = torch.BoolTensor(dones).to(self.device)
 
         current_q_values = self.q_network(states).gather(1, actions.unsqueeze(1)).squeeze()
-        next_q_values = self.target_network(next_states).max(1)[0].detach()
+        
+        # Double DQN: use main network to select actions, target network to evaluate
+        next_actions = self.q_network(next_states).argmax(dim=1)
+        next_q_values = self.target_network(next_states).gather(1, next_actions.unsqueeze(1)).squeeze().detach()
+        
         target_q_values = rewards + (self.gamma * next_q_values * (~dones))
 
         loss = F.mse_loss(current_q_values, target_q_values)

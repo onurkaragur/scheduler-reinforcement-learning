@@ -33,9 +33,12 @@ class SchedulerEnv:
         self.completion_bonus = completion_bonus
         self.idle_penalty = idle_penalty
         self.base_max_steps = max_steps
+        self.total_tasks = len(tasks)
 
         self.action_space_size = max_queue_size
-        self.state_dim = max_queue_size * state_size + 1
+        # Enhanced state: queue features + system metrics (queue depth, load, etc.).
+        # _get_state appends 6 system-level features, so add 6 here.
+        self.state_dim = max_queue_size * state_size + 6
 
         self.reset()
 
@@ -80,7 +83,12 @@ class SchedulerEnv:
         if self.running_task is not None and self.current_time >= self.running_task_end_time:
             self.running_task.completion_time = self.running_task_end_time
             self.completed_tasks.append(self.running_task)
-            reward += self.completion_bonus
+            
+            # Enhanced completion reward: bonus based on priority and waiting time
+            priority_bonus = (4 - self.running_task.priority) * 0.2  # Higher priority = higher bonus
+            completion_reward = self.completion_bonus + priority_bonus
+            reward += completion_reward
+            
             self.running_task = None
             self.running_task_end_time = None
 
@@ -89,14 +97,22 @@ class SchedulerEnv:
 
             selected_task = self.ready_queue.pop(action)
             waiting_time = self.current_time - selected_task.arrival_time
+            
+            # Enhanced waiting time penalty: non-linear with task priority consideration
             wait_penalty = np.tanh(waiting_time / max(1.0, self.reward_scale))
+            priority_weight = (4 - selected_task.priority) / 3.0  # High priority tasks penalize more
+            wait_penalty *= priority_weight
             reward -= wait_penalty
 
             selected_task.start_time = self.current_time
             self.running_task = selected_task
             self.running_task_end_time = self.current_time + selected_task.execution_time
         elif self.running_task is None:
-            reward -= self.idle_penalty
+            # Idle penalty varies with queue depth (penalize idle when work is available elsewhere)
+            remaining_tasks = len(self.tasks) - self.task_idx
+            queue_pressure = len(self.ready_queue) / max(1, self.max_queue_size)
+            idle_penalty_scaled = self.idle_penalty * (1 + queue_pressure)
+            reward -= idle_penalty_scaled
 
         next_event_time = float("inf")
         if self.running_task_end_time is not None:
@@ -137,7 +153,10 @@ class SchedulerEnv:
                 break
 
     def _get_state(self) -> np.ndarray:
+        """Enhanced state representation with system metrics."""
         queue_features = []
+        
+        # Queue feature extraction
         for i in range(self.max_queue_size):
             if i < len(self.ready_queue):
                 task = self.ready_queue[i]
@@ -155,7 +174,24 @@ class SchedulerEnv:
             else:
                 queue_features.extend([0.0] * self.state_size)
 
-        state = queue_features + [self.current_time / 100.0]
+        # System-level features for better context
+        queue_depth = len(self.ready_queue) / max(1, self.max_queue_size)  # Queue utilization [0, 1]
+        system_load = len(self.completed_tasks) / max(1, self.total_tasks)  # Progress ratio [0, 1]
+        remaining_load = (self.total_tasks - self.task_idx) / max(1, self.total_tasks)  # Upcoming workload
+        max_waiting = max(
+            [self.current_time - t.arrival_time for t in self.ready_queue],
+            default=0.0
+        ) / max(1.0, self.reward_scale)  # Oldest waiting task normalized
+        running_status = 1.0 if self.running_task is not None else 0.0  # Is CPU busy?
+        
+        state = queue_features + [
+            self.current_time / 100.0,
+            queue_depth,
+            system_load,
+            remaining_load,
+            max_waiting,
+            running_status,
+        ]
         return np.array(state, dtype=np.float32)
 
     def get_completed_tasks(self) -> List[Task]:

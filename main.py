@@ -35,6 +35,7 @@ def train_rl_agent(
     reward_scale: float = 50.0,
     completion_bonus: float = 1.0,
     idle_penalty: float = 0.05,
+    use_dueling: bool = True,
 ) -> DQNAgent:
     print("\n" + "=" * 60)
     print("Training RL Agent")
@@ -56,14 +57,15 @@ def train_rl_agent(
     agent = DQNAgent(
         state_size=state_size_total,
         action_size=action_size,
-        learning_rate=1e-3,
-        gamma=0.95,
+        learning_rate=5e-4,
+        gamma=0.99,
         epsilon=1.0,
         epsilon_min=0.05,
         epsilon_decay_episodes=max(20, episodes // 2),
-        memory_size=10000,
-        batch_size=64,
-        target_update_freq=100,
+        memory_size=50000,
+        batch_size=128,
+        target_update_freq=1000,
+        use_dueling=use_dueling,
     )
 
     total_rewards = []
@@ -275,6 +277,7 @@ def main():
     parser.add_argument("--completion-bonus", type=float, default=1.0, help="Reward bonus when a task completes")
     parser.add_argument("--idle-penalty", type=float, default=0.05, help="Penalty when scheduler is idle")
     parser.add_argument("--episode-task-count", type=int, default=512, help="Number of tasks sampled per training episode")
+    parser.add_argument("--use-dueling", action="store_true", default=True, help="Use Dueling DQN architecture")
     args = parser.parse_args()
 
     print(f"Loading data from {args.data}...")
@@ -329,6 +332,7 @@ def main():
                 reward_scale=args.reward_scale,
                 completion_bonus=args.completion_bonus,
                 idle_penalty=args.idle_penalty,
+                use_dueling=args.use_dueling,
             )
         elif model_exists:
             print(f"\nLoading existing RL agent from {args.model}...")
