@@ -89,11 +89,19 @@ class DQNAgent:
         batch_size: int = 128,
         target_update_freq: int = 1000,
         use_dueling: bool = True,
+        use_per: bool = False,
+        per_alpha: float = 0.6,
+        per_beta: float = 0.4,
+        per_eps: float = 1e-6,
         device: Optional[str] = None,
     ):
         self.state_size = state_size
         self.action_size = action_size
-        self.memory = deque(maxlen=memory_size)
+        # Use list-based circular buffer to support PER
+        self.max_memory = memory_size
+        self.memory = []  # list of (s,a,r,ns,done)
+        self.priorities = []  # list of floats for PER
+        self.pos = 0
         self.batch_size = batch_size
         self.gamma = gamma
         self.epsilon_start = epsilon
@@ -104,6 +112,10 @@ class DQNAgent:
         self.target_update_freq = target_update_freq
         self.update_counter = 0
         self.use_dueling = use_dueling
+        self.use_per = use_per
+        self.per_alpha = per_alpha
+        self.per_beta = per_beta
+        self.per_eps = per_eps
 
         if device is None:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -127,7 +139,17 @@ class DQNAgent:
         self.target_network.load_state_dict(self.q_network.state_dict())
 
     def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
+        # Add transition with max priority (for PER)
+        transition = (state, action, reward, next_state, done)
+        max_prio = max(self.priorities) if self.priorities else 1.0
+        if len(self.memory) < self.max_memory:
+            self.memory.append(transition)
+            self.priorities.append(max_prio)
+        else:
+            # overwrite oldest entry
+            self.memory[self.pos] = transition
+            self.priorities[self.pos] = max_prio
+            self.pos = (self.pos + 1) % self.max_memory
 
     def act(self, state: np.ndarray, training: bool = True) -> int:
         if training and random.random() <= self.epsilon:
@@ -141,7 +163,19 @@ class DQNAgent:
         if len(self.memory) < self.batch_size:
             return None
 
-        batch = random.sample(self.memory, self.batch_size)
+        # Sample indices using PER if enabled
+        if self.use_per:
+            prios = np.array(self.priorities, dtype=np.float64)
+            probs = prios ** self.per_alpha
+            probs /= probs.sum()
+            indices = np.random.choice(len(self.memory), self.batch_size, p=probs)
+            weights = (len(self.memory) * probs[indices]) ** (-self.per_beta)
+            weights = weights / weights.max()
+        else:
+            indices = np.random.choice(len(self.memory), self.batch_size, replace=False)
+            weights = np.ones(self.batch_size, dtype=np.float32)
+
+        batch = [self.memory[idx] for idx in indices]
         states, actions, rewards, next_states, dones = zip(*batch)
 
         states = torch.FloatTensor(np.array(states)).to(self.device)
@@ -149,21 +183,29 @@ class DQNAgent:
         rewards = torch.FloatTensor(rewards).to(self.device)
         next_states = torch.FloatTensor(np.array(next_states)).to(self.device)
         dones = torch.BoolTensor(dones).to(self.device)
+        weights_t = torch.FloatTensor(weights).to(self.device)
 
         current_q_values = self.q_network(states).gather(1, actions.unsqueeze(1)).squeeze()
-        
+
         # Double DQN: use main network to select actions, target network to evaluate
         next_actions = self.q_network(next_states).argmax(dim=1)
         next_q_values = self.target_network(next_states).gather(1, next_actions.unsqueeze(1)).squeeze().detach()
-        
+
         target_q_values = rewards + (self.gamma * next_q_values * (~dones))
 
-        loss = F.mse_loss(current_q_values, target_q_values)
+        # TD errors per sample
+        td_errors = target_q_values - current_q_values
+        loss = (weights_t * td_errors.pow(2)).mean()
 
         self.optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), 1.0)
         self.optimizer.step()
+
+        # Update priorities
+        abs_errors = td_errors.detach().abs().cpu().numpy()
+        for i, idx in enumerate(indices):
+            self.priorities[idx] = abs_errors[i] + self.per_eps
 
         self.update_counter += 1
         if self.update_counter % self.target_update_freq == 0:

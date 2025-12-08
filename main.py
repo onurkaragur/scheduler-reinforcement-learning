@@ -21,6 +21,8 @@ from schedulers import FCFSScheduler, SJFScheduler, PriorityScheduler, RoundRobi
 from scheduler_env import SchedulerEnv
 from agent import DQNAgent
 from rl_scheduler import RLScheduler
+from ann_scheduler import ANNScheduler
+from torch.utils.tensorboard import SummaryWriter
 
 
 def train_rl_agent(
@@ -35,7 +37,18 @@ def train_rl_agent(
     reward_scale: float = 50.0,
     completion_bonus: float = 1.0,
     idle_penalty: float = 0.05,
+    learning_rate: float = 5e-4,
+    gamma: float = 0.99,
+    memory_size: int = 50000,
+    batch_size: int = 128,
+    target_update_freq: int = 1000,
     use_dueling: bool = True,
+    use_per: bool = True,
+    per_alpha: float = 0.6,
+    per_beta: float = 0.4,
+    per_eps: float = 1e-6,
+    tensorboard: bool = False,
+    log_dir: str = "runs/rl",
 ) -> DQNAgent:
     print("\n" + "=" * 60)
     print("Training RL Agent")
@@ -54,18 +67,23 @@ def train_rl_agent(
     state_size_total = sample_env.state_dim
     action_size = sample_env.action_space_size
 
+    # Agent hyperparameters are set by caller via CLI; use reasonable defaults here
     agent = DQNAgent(
         state_size=state_size_total,
         action_size=action_size,
-        learning_rate=5e-4,
-        gamma=0.99,
+        learning_rate=learning_rate,
+        gamma=gamma,
         epsilon=1.0,
         epsilon_min=0.05,
         epsilon_decay_episodes=max(20, episodes // 2),
-        memory_size=50000,
-        batch_size=128,
-        target_update_freq=1000,
+        memory_size=memory_size,
+        batch_size=batch_size,
+        target_update_freq=target_update_freq,
         use_dueling=use_dueling,
+        use_per=use_per,
+        per_alpha=per_alpha,
+        per_beta=per_beta,
+        per_eps=per_eps,
     )
 
     total_rewards = []
@@ -73,6 +91,7 @@ def train_rl_agent(
     loss_history = []
     best_eval_reward = float("-inf")
     best_state = None
+    writer = SummaryWriter(log_dir) if tensorboard else None
 
     for episode in range(episodes):
         episode_size = min(len(tasks), episode_task_count)
@@ -88,7 +107,6 @@ def train_rl_agent(
         )
         state, _ = env.reset()
         total_reward = 0.0
-        steps = 0
         done = False
         episode_losses = []
 
@@ -157,6 +175,7 @@ def train_rl_agent(
 def test_schedulers(
     tasks: List[Task],
     rl_agent: Optional[DQNAgent] = None,
+    ann_scheduler: Optional[ANNScheduler] = None,
     max_queue_size: int = 10,
     state_size: int = 7,
     reward_scale: float = 50.0,
@@ -197,6 +216,12 @@ def test_schedulers(
         ).schedule(clone_tasks(tasks))
         results["RL (DQN)"] = calculate_metrics(rl_tasks)
         print_metrics(results["RL (DQN)"], "RL (DQN)")
+
+    if ann_scheduler is not None:
+        print("Testing ANN Scheduler...")
+        ann_tasks = ann_scheduler.schedule(clone_tasks(tasks))
+        results[f"ANN ({ann_scheduler.label_policy})"] = calculate_metrics(ann_tasks)
+        print_metrics(results[f"ANN ({ann_scheduler.label_policy})"], f"ANN ({ann_scheduler.label_policy})")
 
     return results
 
@@ -278,6 +303,20 @@ def main():
     parser.add_argument("--idle-penalty", type=float, default=0.05, help="Penalty when scheduler is idle")
     parser.add_argument("--episode-task-count", type=int, default=512, help="Number of tasks sampled per training episode")
     parser.add_argument("--use-dueling", action="store_true", default=True, help="Use Dueling DQN architecture")
+    parser.add_argument("--learning-rate", type=float, default=5e-4, help="Learning rate for optimizer")
+    parser.add_argument("--gamma", type=float, default=0.99, help="Discount factor")
+    parser.add_argument("--memory-size", type=int, default=50000, help="Replay memory size")
+    parser.add_argument("--batch-size", type=int, default=128, help="Batch size for training")
+    parser.add_argument("--target-update-freq", type=int, default=1000, help="Target network update frequency (steps)")
+    parser.add_argument("--use-per", action="store_true", default=True, help="Use Prioritized Experience Replay")
+    parser.add_argument("--per-alpha", type=float, default=0.6, help="PER alpha parameter")
+    parser.add_argument("--per-beta", type=float, default=0.4, help="PER beta parameter")
+    parser.add_argument("--per-eps", type=float, default=1e-6, help="PER epsilon to avoid zero priority")
+    parser.add_argument("--train-ann", action="store_true", help="Train ANN scheduler (imitation) on training set")
+    parser.add_argument("--ann-epochs", type=int, default=10, help="Epochs for ANN training")
+    parser.add_argument("--ann-policy", type=str, default="priority", choices=("priority", "sjf"), help="Label policy for ANN (priority or sjf)")
+    parser.add_argument("--tensorboard", action="store_true", help="Enable TensorBoard logging during RL training")
+    parser.add_argument("--log-dir", type=str, default="runs/rl", help="TensorBoard log directory")
     args = parser.parse_args()
 
     print(f"Loading data from {args.data}...")
@@ -332,7 +371,18 @@ def main():
                 reward_scale=args.reward_scale,
                 completion_bonus=args.completion_bonus,
                 idle_penalty=args.idle_penalty,
+                learning_rate=args.learning_rate,
+                gamma=args.gamma,
+                memory_size=args.memory_size,
+                batch_size=args.batch_size,
+                target_update_freq=args.target_update_freq,
                 use_dueling=args.use_dueling,
+                use_per=args.use_per,
+                per_alpha=args.per_alpha,
+                per_beta=args.per_beta,
+                per_eps=args.per_eps,
+                tensorboard=args.tensorboard,
+                log_dir=args.log_dir,
             )
         elif model_exists:
             print(f"\nLoading existing RL agent from {args.model}...")
@@ -363,12 +413,21 @@ def main():
             "Validation",
         )
 
+    # Optionally train ANN scheduler (imitation)
+    ann_scheduler = None
+    if args.train_ann:
+        print("Training ANN scheduler (imitation)...")
+        ann_scheduler = ANNScheduler(max_queue_size=args.max_queue_size, state_size=state_size, label_policy=args.ann_policy)
+        ann_scheduler.fit(train_tasks, epochs=args.ann_epochs)
+        print("ANN training complete.")
+
     print("\n" + "=" * 60)
     print("Testing All Schedulers")
     print("=" * 60)
     results = test_schedulers(
         test_tasks,
         rl_agent=rl_agent,
+        ann_scheduler=ann_scheduler,
         max_queue_size=args.max_queue_size,
         state_size=state_size,
         reward_scale=args.reward_scale,

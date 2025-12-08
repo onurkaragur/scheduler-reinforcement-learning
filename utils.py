@@ -104,31 +104,42 @@ def print_metrics(metrics: Dict[str, float], scheduler_name: str):
 
 def compare_schedulers(results: Dict[str, Dict[str, float]]):
     """Compare results from multiple schedulers."""
-    print("\n" + "="*80)
-    print("SCHEDULER COMPARISON")
-    print("="*80)
-    
-    # Create comparison table
+    # Nicely formatted fixed-width table
     schedulers = list(results.keys())
     metrics = ['avg_waiting_time', 'avg_turnaround_time', 'avg_response_time', 'throughput']
-    
-    print(f"\n{'Metric':<25}", end="")
-    for sched in schedulers:
-        print(f"{sched:<20}", end="")
-    print()
-    print("-" * 80)
-    
+
+    # sanitize and determine column widths
+    schedames_clean = [s.replace('\n', ' ') for s in schedulers]
+    col_width = 18
+    metric_col = 26
+    total_width = metric_col + len(schedulers) * col_width
+
+    print("\n" + "=" * total_width)
+    title = "SCHEDULER COMPARISON"
+    print(title.center(total_width))
+    print("=" * total_width)
+
+    # Header
+    header = f"{'Metric':<{metric_col}}"
+    for s in schedames_clean:
+        short = (s[: col_width - 2] + '..') if len(s) > col_width - 2 else s
+        header += f"{short:^{col_width}}"
+    print(header)
+    print("-" * total_width)
+
+    # Rows
     for metric in metrics:
-        print(f"{metric:<25}", end="")
+        row = f"{metric:<{metric_col}}"
         for sched in schedulers:
             value = results[sched].get(metric, 0)
             if 'time' in metric:
-                print(f"{value:>15.2f}s     ", end="")
+                cell = f"{value:>8.2f}s"
             else:
-                print(f"{value:>15.4f}     ", end="")
-        print()
-    
-    print("="*80 + "\n")
+                cell = f"{value:>8.4f}"
+            row += f"{cell:^{col_width}}"
+        print(row)
+
+    print("=" * total_width + "\n")
 
 
 def clone_tasks(tasks: List[Task]) -> List[Task]:
